@@ -1,0 +1,48 @@
+# Nginx reverse-proxy template for the Aether gateway.
+# Mounted at /etc/nginx/templates/default.conf.template in the nginx:stable-alpine image.
+# ${APP_PORT} is substituted by docker-entrypoint.sh at container start.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen ${APP_PORT} ssl;
+    http2 on;
+    server_name _;
+
+    # --- TLS ---------------------------------------------------------------
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    # --- Request body ------------------------------------------------------
+    client_max_body_size 100m;   # large AI prompts / embedding batches
+
+    # --- Upstream proxy ----------------------------------------------------
+    location / {
+        proxy_pass http://app:${APP_PORT};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # WebSocket / HTTP upgrade
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # SSE streaming: disable buffering so events flush byte-by-byte.
+        proxy_buffering off;
+        proxy_cache     off;
+        chunked_transfer_encoding on;
+
+        # LLM reasoning models can pause tens of seconds between tokens.
+        proxy_connect_timeout 60s;
+        proxy_read_timeout    3600s;
+        proxy_send_timeout    3600s;
+    }
+}
