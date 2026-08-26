@@ -99,8 +99,25 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: aether-nginx
+    environment:
+      APP_PORT: ${APP_PORT:-8084}
     ports:
       - "${APP_PORT:-8084}:${APP_PORT:-8084}"
+    volumes:
+      - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
     logging:
       driver: json-file
       options:
