@@ -247,4 +247,9 @@ src/_version.py
 # Analysis folder (third-party code for reference)
 analysis/
 new-api/
+
+# TLS certificates (deploy/nginx/certs/)
+deploy/nginx/certs/*.pem
+deploy/nginx/certs/*.key
+deploy/nginx/certs/*.csr
 apps/aether-tunnel/aether-tunnel.toml
