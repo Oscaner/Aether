@@ -6,8 +6,8 @@ This directory is mounted read-only into the `aether-nginx` container at `/etc/n
 
 | File | Purpose |
 |---|---|
-| `fullchain.pem` | Server certificate + full chain (no trailing newline required). |
-| `privkey.pem` | Private key matching `fullchain.pem`. |
+| `server.crt` | Server certificate + full chain (no trailing newline required). |
+| `server.key` | Private key matching `server.crt`. |
 
 ## Usage
 
@@ -27,5 +27,5 @@ This directory is mounted read-only into the `aether-nginx` container at `/etc/n
 ## Notes
 
 - Certificates and private keys in this directory are `.gitignore`-ed.
-- `fullchain.pem` must include any intermediate CA certs; a bare leaf cert will cause nginx to refuse connections.
+- `server.crt` must include any intermediate CA certs; a bare leaf cert will cause nginx to refuse connections.
 - If either file is missing, nginx will fail to start — check `docker compose logs nginx`.
