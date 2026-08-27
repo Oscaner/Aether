@@ -61,8 +61,13 @@
 | 分配套餐给用户 | `POST /api/admin/users/{id}/billing/grant-plan` `{plan_id, reason?}` | admin:users |
 | 创建分组 | `POST /api/admin/user-groups` | admin:users |
 | 创建套餐 | `POST /api/admin/billing/plans` | admin:billing |
+| 设系统默认组 | `PUT /api/admin/user-groups/default` `{group_id}` | admin:users |
+| 为用户生成 API Key | `POST /api/admin/users/{id}/api-keys` `{name?}` | admin:users |
+| 更新分组 | `PUT /api/admin/user-groups/{id}` | admin:users |
 
 认证：management token（`mgmt_` 前缀，带 `admin:users`/`admin:billing`，过 IP 白名单）。
+
+**默认组机制**：`PUT /api/admin/user-groups/default` 把组 ID 写入 system_config 表键 `default_user_group_id`；新 SSO 用户自动加入该组（见 2.5）。`GET /api/admin/user-groups` 返回的 `is_default` 是前端按此配置键实时计算的标志（非数据库列）。
 
 **查套餐响应字段**（续期脚本依赖）：`GET .../entitlements` 返回 `{ items: [...], total }`，每项含 `active`（bool，= `status==active && starts<=now < expires`）、`plan_id`、`expires_at`（RFC3339）、`entitlements`（权益快照）。
 
