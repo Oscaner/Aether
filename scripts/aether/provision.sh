@@ -29,6 +29,15 @@ AUTH=(-H "Authorization: Bearer $MGMT_TOKEN" -H "Content-Type: application/json"
 # shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && source "$ENV_FILE" 2>/dev/null || true
 
+# 清理无效 id（上一次失败运行可能写入了 "null" 字符串）
+for _var in DEFAULT_GROUP_ID BASIC_GROUP_ID STANDARD_GROUP_ID PREMIUM_GROUP_ID \
+            BASIC_PLAN_ID STANDARD_PLAN_ID PREMIUM_PLAN_ID; do
+  eval "_val=\${$_var:-}"
+  if [ -z "$_val" ] || [ "$_val" = "null" ]; then
+    eval "$_var=\"\""
+  fi
+done
+
 # ---- 辅助函数 ----
 upsert_env() {
   # 向 .env 追加或更新 KEY=VALUE（不触碰已有无关变量）
@@ -41,32 +50,58 @@ upsert_env() {
   fi
 }
 
+api_call() {
+  # 发起 API 调用，检查 HTTP 状态码和 JSON 有效性，失败时打印诊断并 exit 1
+  local method="$1" url="$2" body="${3:-}"
+  local http_code resp
+  if [ -n "$body" ]; then
+    resp=$(curl -sS -w "\n%{http_code}" -X "$method" "$url" "${AUTH[@]}" -d "$body")
+  else
+    resp=$(curl -sS -w "\n%{http_code}" -X "$method" "$url" "${AUTH[@]}")
+  fi
+  http_code=$(echo "$resp" | tail -1)
+  resp=$(echo "$resp" | sed '$d')
+  if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+    echo "错误: $method $url → HTTP $http_code" >&2
+    echo "响应: $resp" >&2
+    exit 1
+  fi
+  if ! echo "$resp" | jq empty 2>/dev/null; then
+    echo "错误: $method $url 返回非 JSON (HTTP $http_code)" >&2
+    echo "响应前 200 字符: ${resp:0:200}" >&2
+    exit 1
+  fi
+  echo "$resp"
+}
+
 create_group() {
   local name="$1" desc="$2"
-  local existing
-  existing=$(curl -sS "$AETHER_BASE/api/admin/user-groups" "${AUTH[@]}" \
-    | jq -r --arg n "$name" '.items[]? | select(.name==$n) | .id' | head -1)
+  local existing resp
+  resp=$(api_call GET "$AETHER_BASE/api/admin/user-groups")
+  existing=$(echo "$resp" | jq -r --arg n "$name" '.items[]? | select(.name==$n) | .id' | head -1)
   if [ -n "$existing" ]; then
-    echo "复用已存在分组: $name ($existing)"
+    echo "复用已存在分组: $name ($existing)" >&2
     echo "$existing"
     return
   fi
-  curl -sS -X POST "$AETHER_BASE/api/admin/user-groups" "${AUTH[@]}" \
-    -d "$3" | jq -r '.id'
+  resp=$(api_call POST "$AETHER_BASE/api/admin/user-groups" "$3")
+  echo "  [debug] create_group $name response: $resp" >&2
+  echo "$resp" | jq -r '.id'
 }
 
 create_plan() {
   local title="$1"
-  local existing
-  existing=$(curl -sS "$AETHER_BASE/api/admin/billing/plans" "${AUTH[@]}" \
-    | jq -r --arg t "$title" '.items[]? | select(.title==$t) | .id' | head -1)
+  local existing resp
+  resp=$(api_call GET "$AETHER_BASE/api/admin/billing/plans")
+  existing=$(echo "$resp" | jq -r --arg t "$title" '.items[]? | select(.title==$t) | .id' | head -1)
   if [ -n "$existing" ]; then
-    echo "复用已存在套餐: $title ($existing)"
+    echo "复用已存在套餐: $title ($existing)" >&2
     echo "$existing"
     return
   fi
-  curl -sS -X POST "$AETHER_BASE/api/admin/billing/plans" "${AUTH[@]}" \
-    -d "$2" | jq -r '.id'
+  resp=$(api_call POST "$AETHER_BASE/api/admin/billing/plans" "$2")
+  echo "  [debug] create_plan $title response: $resp" >&2
+  echo "$resp" | jq -r '.id'
 }
 
 # ---- Task 1: 4 个分组 ----
@@ -104,14 +139,22 @@ PREMIUM_GROUP_ID="${PREMIUM_GROUP_ID:-$(create_group "Premium" "高级档 20/天
 }')}"
 
 # ---- 设系统默认组（SSO 自动入组键）----
-curl -sS -X PUT "$AETHER_BASE/api/admin/user-groups/default" "${AUTH[@]}" \
-  -d "{ \"group_id\": \"$DEFAULT_GROUP_ID\" }" >/dev/null
+echo "[debug] PUT body: {\"group_id\":\"$DEFAULT_GROUP_ID\"}" >&2
+http_code=$(curl -sS -o /tmp/_aether_default_resp.json -w "%{http_code}" \
+  -X PUT "$AETHER_BASE/api/admin/user-groups/default" \
+  -H "Authorization: Bearer $MGMT_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"group_id\":\"$DEFAULT_GROUP_ID\"}")
+if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+  echo "错误: PUT /api/admin/user-groups/default → HTTP $http_code" >&2
+  cat /tmp/_aether_default_resp.json >&2
+  exit 1
+fi
 echo "已设 Default 为系统默认组: $DEFAULT_GROUP_ID"
 
 # ---- Task 2: 3 个月卡套餐 ----
 BASIC_PLAN_ID="${BASIC_PLAN_ID:-$(create_plan "基础月卡" '{
   "title": "基础月卡", "description": "基础档，每日额度 $0.5，动态授予基础组",
-  "price_amount": 0, "price_currency": "USD",
+  "price_amount": 0.01, "price_currency": "USD",
   "duration_unit": "month", "duration_value": 1, "enabled": true,
   "sort_order": 10, "max_active_per_user": 1, "purchase_limit_scope": "active_period",
   "entitlements": [
@@ -122,7 +165,7 @@ BASIC_PLAN_ID="${BASIC_PLAN_ID:-$(create_plan "基础月卡" '{
 
 STANDARD_PLAN_ID="${STANDARD_PLAN_ID:-$(create_plan "标准月卡" '{
   "title": "标准月卡", "description": "标准档，每日额度 $5，动态授予标准组",
-  "price_amount": 0, "price_currency": "USD",
+  "price_amount": 0.01, "price_currency": "USD",
   "duration_unit": "month", "duration_value": 1, "enabled": true,
   "sort_order": 20, "max_active_per_user": 1, "purchase_limit_scope": "active_period",
   "entitlements": [
@@ -133,7 +176,7 @@ STANDARD_PLAN_ID="${STANDARD_PLAN_ID:-$(create_plan "标准月卡" '{
 
 PREMIUM_PLAN_ID="${PREMIUM_PLAN_ID:-$(create_plan "高级月卡" '{
   "title": "高级月卡", "description": "高级档，每日额度 $20，动态授予高级组",
-  "price_amount": 0, "price_currency": "USD",
+  "price_amount": 0.01, "price_currency": "USD",
   "duration_unit": "month", "duration_value": 1, "enabled": true,
   "sort_order": 30, "max_active_per_user": 1, "purchase_limit_scope": "active_period",
   "entitlements": [
@@ -143,6 +186,17 @@ PREMIUM_PLAN_ID="${PREMIUM_PLAN_ID:-$(create_plan "高级月卡" '{
 }')}"
 
 # ---- 追加置备 id 到 .env（仅追加/更新 id，不覆盖用户已有变量） ----
+# 校验所有 id 非空，否则中断不写入（避免 null 污染 .env）
+for _check in DEFAULT_GROUP_ID BASIC_GROUP_ID STANDARD_GROUP_ID PREMIUM_GROUP_ID \
+              BASIC_PLAN_ID STANDARD_PLAN_ID PREMIUM_PLAN_ID; do
+  eval "_val=\${$_check:-}"
+  if [ -z "$_val" ] || [ "$_val" = "null" ]; then
+    echo "错误: $_check 为空或 null，API 创建可能失败，中止写入 .env" >&2
+    echo "请检查上方 [debug] 输出中的 API 响应" >&2
+    exit 1
+  fi
+done
+
 for kv in \
   "DEFAULT_GROUP_ID=$DEFAULT_GROUP_ID" \
   "BASIC_GROUP_ID=$BASIC_GROUP_ID" \
