@@ -19,15 +19,20 @@ RENEW_WINDOW_DAYS=3
 NOW_EPOCH=$(date +%s)
 WINDOW_EPOCH=$(( NOW_EPOCH + RENEW_WINDOW_DAYS * 86400 ))
 RENEWED=0
+FAILED=0
+
+# temp 文件清理：脚本退出时自动删除
+WORK=$(mktemp)
+cleanup() { rm -f "$WORK"; }
+trap cleanup EXIT
 
 # 解析 RFC3339 时间串为 epoch；统一按 UTC，跨平台用 python3（避免 +08:00 偏移误判）
 to_epoch() {
   local s="$1"
-  # 归一化 RFC3339（支持 Z / +08:00 / 含毫秒），统一解析为 UTC epoch 秒
   python3 - "$s" <<'PY' 2>/dev/null || echo "$NOW_EPOCH"
 import sys, datetime
 s = sys.argv[1].replace('Z', '+00:00')
-if '.' in s:  # 去除毫秒/微秒（旧版 fromisoformat 不支持小数秒）
+if '.' in s:
     dot = s.index('.')
     end = dot + 1
     while end < len(s) and s[end].isdigit():
@@ -37,40 +42,73 @@ print(int(datetime.datetime.fromisoformat(s).timestamp()))
 PY
 }
 
-# 单趟收集 (uid, plan_id, expires_at) 三元组到临时文件，避免嵌套管道丢作用域
-WORK=$(mktemp)
+# 单趟 API 调用，返回 HTTP 状态码和响应体
+api_status() {
+  local url="$1"
+  curl -sS -w "\n%{http_code}" "$url" -H "Authorization: Bearer $MGMT_TOKEN" 2>/dev/null
+}
+
+# ---- 阶段 1：收集需要续期的 (uid, plan_id, expires_at) ----
 skip=0
 while :; do
-  page=$(curl -sS "$AETHER_BASE/api/admin/users?limit=1000&skip=$skip" \
-    -H "Authorization: Bearer $MGMT_TOKEN") || { echo "fetch users page failed" >&2; exit 1; }
-  [ -n "$page" ] || { echo "empty users page" >&2; exit 1; }
+  resp=$(curl -sS -w "\n%{http_code}" "$AETHER_BASE/api/admin/users?limit=1000&skip=$skip" \
+    -H "Authorization: Bearer $MGMT_TOKEN" 2>/dev/null)
+  http_code=$(echo "$resp" | tail -1)
+  page=$(echo "$resp" | sed '$d')
+
+  if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+    echo "错误: GET /api/admin/users → HTTP $http_code" >&2
+    echo "响应: ${page:0:200}" >&2
+    exit 1
+  fi
+  if ! echo "$page" | jq empty 2>/dev/null; then
+    echo "错误: GET /api/admin/users 返回非 JSON (HTTP $http_code)" >&2
+    echo "响应前 200 字符: ${page:0:200}" >&2
+    exit 1
+  fi
+
   echo "$page" | jq -r '.items[]? | .id' | while read -r uid; do
-    ents=$(curl -sS "$AETHER_BASE/api/admin/users/$uid/billing/entitlements" \
-      -H "Authorization: Bearer $MGMT_TOKEN") || { echo "fetch entitlements failed for $uid" >&2; continue; }
-    [ -n "$ents" ] || { echo "empty entitlements for $uid" >&2; continue; }
-    echo "$ents" | jq -r '
+    ents=$(curl -sS -w "\n%{http_code}" \
+      "$AETHER_BASE/api/admin/users/$uid/billing/entitlements" \
+      -H "Authorization: Bearer $MGMT_TOKEN" 2>/dev/null)
+    ecode=$(echo "$ents" | tail -1)
+    ebody=$(echo "$ents" | sed '$d')
+    if [ "$ecode" -lt 200 ] || [ "$ecode" -ge 300 ]; then
+      echo "跳过 user=$uid: entitlements HTTP $ecode" >&2
+      continue
+    fi
+    echo "$ebody" | jq -r --arg uid "$uid" '
       .items[]?
       | select(.active == true and (.expires_at != null))
       | "\($uid)\t\(.plan_id)\t\(.expires_at)"' \
       >> "$WORK"
   done
-  # 分页：依赖 GET /api/admin/users 的 has_more 标志，每页 limit=1000，skip 自增直到 has_more=false
+
   has_more=$(echo "$page" | jq -r '.has_more')
   [ "$has_more" = "true" ] || break
   skip=$(( skip + 1000 ))
 done
 
-# 在父 shell 单层循环处理续期（uid/pid/exp 均在作用域内）
+# ---- 阶段 2：逐条续期 ----
 while IFS=$'\t' read -r uid pid exp; do
   [ -n "$uid" ] || continue
   exp_epoch=$(to_epoch "$exp")
   if [ "$exp_epoch" -le "$WINDOW_EPOCH" ]; then
-    curl -sS -X POST "$AETHER_BASE/api/admin/users/$uid/billing/grant-plan" \
+    grant_resp=$(curl -sS -w "\n%{http_code}" \
+      -X POST "$AETHER_BASE/api/admin/users/$uid/billing/grant-plan" \
       -H "Authorization: Bearer $MGMT_TOKEN" -H "Content-Type: application/json" \
-      -d "{\"plan_id\":\"$pid\",\"reason\":\"auto-renewal\"}" >/dev/null
-    echo "renewed user=$uid plan=$pid"
-    RENEWED=$((RENEWED + 1))
+      -d "{\"plan_id\":\"$pid\",\"reason\":\"auto-renewal\"}" 2>/dev/null)
+    gcode=$(echo "$grant_resp" | tail -1)
+    gbody=$(echo "$grant_resp" | sed '$d')
+    if [ "$gcode" -ge 200 ] && [ "$gcode" -lt 300 ]; then
+      echo "renewed user=$uid plan=$pid"
+      RENEWED=$((RENEWED + 1))
+    else
+      echo "失败 user=$uid plan=$pid → HTTP $gcode: ${gbody:0:200}" >&2
+      FAILED=$((FAILED + 1))
+    fi
   fi
 done < "$WORK"
-rm -f "$WORK"
-echo "renewal pass done, renewed=$RENEWED"
+
+echo "renewal pass done: renewed=$RENEWED failed=$FAILED"
+[ "$FAILED" -eq 0 ] || exit 1
