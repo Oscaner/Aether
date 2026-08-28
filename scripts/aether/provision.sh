@@ -85,7 +85,6 @@ create_group() {
     return
   fi
   resp=$(api_call POST "$AETHER_BASE/api/admin/user-groups" "$3")
-  echo "  [debug] create_group $name response: $resp" >&2
   echo "$resp" | jq -r '.id'
 }
 
@@ -100,7 +99,6 @@ create_plan() {
     return
   fi
   resp=$(api_call POST "$AETHER_BASE/api/admin/billing/plans" "$2")
-  echo "  [debug] create_plan $title response: $resp" >&2
   echo "$resp" | jq -r '.id'
 }
 
@@ -139,7 +137,6 @@ PREMIUM_GROUP_ID="${PREMIUM_GROUP_ID:-$(create_group "Premium" "高级档 20/天
 }')}"
 
 # ---- 设系统默认组（SSO 自动入组键）----
-echo "[debug] PUT body: {\"group_id\":\"$DEFAULT_GROUP_ID\"}" >&2
 http_code=$(curl -sS -o /tmp/_aether_default_resp.json -w "%{http_code}" \
   -X PUT "$AETHER_BASE/api/admin/user-groups/default" \
   -H "Authorization: Bearer $MGMT_TOKEN" -H "Content-Type: application/json" \
@@ -192,7 +189,6 @@ for _check in DEFAULT_GROUP_ID BASIC_GROUP_ID STANDARD_GROUP_ID PREMIUM_GROUP_ID
   eval "_val=\${$_check:-}"
   if [ -z "$_val" ] || [ "$_val" = "null" ]; then
     echo "错误: $_check 为空或 null，API 创建可能失败，中止写入 .env" >&2
-    echo "请检查上方 [debug] 输出中的 API 响应" >&2
     exit 1
   fi
 done
