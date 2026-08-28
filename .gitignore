@@ -254,4 +254,3 @@ deploy/nginx/certs/*.crt
 deploy/nginx/certs/*.key
 deploy/nginx/certs/*.csr
 apps/aether-tunnel/aether-tunnel.toml
-.env.aether

@@ -1,35 +1,48 @@
 #!/usr/bin/env bash
 # Aether 号池分组与套餐管理 — 初始置备脚本
-# 一键创建 4 个常驻分组 + 3 个月卡套餐 + 设系统默认组，并把所有 id 写入 .env.aether。
+# 一键创建 4 个常驻分组 + 3 个月卡套餐 + 设系统默认组，并把置备产生的 id 追加到 .env。
 # 用法：
-#   1) 编辑本脚本顶部的 AETHER_BASE / MGMT_TOKEN，或在环境中 export 这两个变量后运行；
+#   1) 确保 .env 中已设置 AETHER_BASE 与 MGMT_TOKEN；
 #   2) bash scripts/aether/provision.sh
 # 约束：零代码改动，仅调用既有 admin API；重复运行会幂等跳过已存在的同名项。
 set -euo pipefail
 
-# ---- 配置（可在运行前 export 覆盖） ----
+ENV_FILE="${ENV_FILE:-.env}"
+
+# 从 .env 加载 AETHER_BASE / MGMT_TOKEN（用户在运行 provision.sh 前须已在 .env 中配置）
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 AETHER_BASE="${AETHER_BASE:-}"
 MGMT_TOKEN="${MGMT_TOKEN:-}"
-ENV_FILE="${ENV_FILE:-.env.aether}"
 
 if [ -z "$AETHER_BASE" ] || [ -z "$MGMT_TOKEN" ]; then
-  echo "错误：请先设置 AETHER_BASE 与 MGMT_TOKEN（export 或在脚本顶部填写）" >&2
+  echo "错误：请先在 .env 中设置 AETHER_BASE 与 MGMT_TOKEN" >&2
   exit 1
 fi
 
 AUTH=(-H "Authorization: Bearer $MGMT_TOKEN" -H "Content-Type: application/json")
-ENV_FILE_ABS="$(cd "$(dirname "$ENV_FILE")" 2>/dev/null && pwd)/$(basename "$ENV_FILE")"
 
-# 若 .env.aether 已存在，加载其中已记录的 id（幂等复用）
-if [ -f "$ENV_FILE_ABS" ]; then
-  # shellcheck disable=SC1090
-  source "$ENV_FILE_ABS"
-fi
+# 若 .env 中已有之前置备的 id，加载它们（幂等复用，不重复创建）
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && source "$ENV_FILE" 2>/dev/null || true
 
 # ---- 辅助函数 ----
+upsert_env() {
+  # 向 .env 追加或更新 KEY=VALUE（不触碰已有无关变量）
+  local key="$1" val="$2" file="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i '' "s|^${key}=.*|${key}=\"${val}\"|" "$file" 2>/dev/null \
+      || sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$file"
+  else
+    echo "${key}=\"${val}\"" >> "$file"
+  fi
+}
+
 create_group() {
   local name="$1" desc="$2"
-  # 幂等：已存在同名组则复用其 id
   local existing
   existing=$(curl -sS "$AETHER_BASE/api/admin/user-groups" "${AUTH[@]}" \
     | jq -r --arg n "$name" '.items[]? | select(.name==$n) | .id' | head -1)
@@ -91,7 +104,6 @@ PREMIUM_GROUP_ID="${PREMIUM_GROUP_ID:-$(create_group "Premium" "高级档 20/天
 }')}"
 
 # ---- 设系统默认组（SSO 自动入组键）----
-# 注意：此调用会把所有现有非管理员用户批量加进 Default 组；存量用户在分配正式套餐前将被锁死。
 curl -sS -X PUT "$AETHER_BASE/api/admin/user-groups/default" "${AUTH[@]}" \
   -d "{ \"group_id\": \"$DEFAULT_GROUP_ID\" }" >/dev/null
 echo "已设 Default 为系统默认组: $DEFAULT_GROUP_ID"
@@ -130,19 +142,19 @@ PREMIUM_PLAN_ID="${PREMIUM_PLAN_ID:-$(create_plan "高级月卡" '{
   ]
 }')}"
 
-# ---- 写出 .env.aether ----
-cat > "$ENV_FILE_ABS" <<EOF
-AETHER_BASE="$AETHER_BASE"
-MGMT_TOKEN="$MGMT_TOKEN"
-DEFAULT_GROUP_ID="$DEFAULT_GROUP_ID"
-BASIC_GROUP_ID="$BASIC_GROUP_ID"
-STANDARD_GROUP_ID="$STANDARD_GROUP_ID"
-PREMIUM_GROUP_ID="$PREMIUM_GROUP_ID"
-BASIC_PLAN_ID="$BASIC_PLAN_ID"
-STANDARD_PLAN_ID="$STANDARD_PLAN_ID"
-PREMIUM_PLAN_ID="$PREMIUM_PLAN_ID"
-EOF
-chmod 600 "$ENV_FILE_ABS"
-echo "置备完成，id 已写入 $ENV_FILE_ABS"
+# ---- 追加置备 id 到 .env（仅追加/更新 id，不覆盖用户已有变量） ----
+for kv in \
+  "DEFAULT_GROUP_ID=$DEFAULT_GROUP_ID" \
+  "BASIC_GROUP_ID=$BASIC_GROUP_ID" \
+  "STANDARD_GROUP_ID=$STANDARD_GROUP_ID" \
+  "PREMIUM_GROUP_ID=$PREMIUM_GROUP_ID" \
+  "BASIC_PLAN_ID=$BASIC_PLAN_ID" \
+  "STANDARD_PLAN_ID=$STANDARD_PLAN_ID" \
+  "PREMIUM_PLAN_ID=$PREMIUM_PLAN_ID"; do
+  key="${kv%%=*}" val="${kv#*=}"
+  upsert_env "$key" "$val" "$ENV_FILE"
+done
+
+echo "置备完成，id 已追加到 $ENV_FILE"
 echo "分组: Default=$DEFAULT_GROUP_ID Basic=$BASIC_GROUP_ID Standard=$STANDARD_GROUP_ID Premium=$PREMIUM_GROUP_ID"
 echo "套餐: 基础=$BASIC_PLAN_ID 标准=$STANDARD_PLAN_ID 高级=$PREMIUM_PLAN_ID"

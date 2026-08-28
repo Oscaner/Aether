@@ -22,7 +22,7 @@
 
 | 文件 | 操作 | 职责 |
 |------|------|------|
-| `scripts/aether/provision.sh` | Create | 置备脚本：一键建 4 分组 + 3 月卡 + 设默认组 + 输出 ids 到 `.env.aether` |
+| `scripts/aether/provision.sh` | Create | 置备脚本：一键建 4 分组 + 3 月卡 + 设默认组 + 输出 ids 到 `.env` |
 | `scripts/aether/renew-plans.sh` | Create | 续期脚本：遍历用户 → 查 active 套餐 → 到期前 3 天同 plan_id 重 grant |
 | `docs/runbooks/2026-08-27-aether-group-plan-management.md` | Create | 运维手册：置备/日常/续期/排障/应急 5 节 |
 | （Aether 代码） | 不改动 | 仅消费既有 admin API |
@@ -35,7 +35,7 @@
 
 **产出物：** `scripts/aether/provision.sh`（一键置备脚本）
 
-**职责：** 该脚本创建 4 个常驻分组（Default 锁死 + 基础/标准/高级）、3 个月卡套餐（daily_quota + membership_group），并把 Default 设为系统默认组（SSO 自动入组键），最后把所有 id 写入 `.env.aether`。
+**职责：** 该脚本创建 4 个常驻分组（Default 锁死 + 基础/标准/高级）、3 个月卡套餐（daily_quota + membership_group），并把 Default 设为系统默认组（SSO 自动入组键），最后把所有 id 写入 `.env`。
 
 **关键约束：**
 - Default 组用 `specific` + 空列表锁死（非 `deny_all`，因分组权限 OR 叠加，deny_all 无法否决其他组）。
@@ -50,13 +50,13 @@
 export AETHER_BASE="https://aether.example.com"
 export MGMT_TOKEN="mgmt_xxx"   # admin:users + admin:billing，过 IP 白名单
 bash scripts/aether/provision.sh
-# 输出 4 分组 + 3 套餐的 id，并写入 .env.aether（chmod 600）
+# 输出 4 分组 + 3 套餐的 id，并写入 .env（chmod 600）
 ```
 
 - [ ] **Step 2: 验证置备结果（检查清单）**
 
 ```bash
-source .env.aether
+source .env
 # (a) 4 分组存在，Default 为锁死 + 默认组
 curl -sS "$AETHER_BASE/api/admin/user-groups" "${AUTH[@]}" \
   | jq '.items[] | {name, is_default, allowed_models_mode, allowed_models, allowed_providers_mode, allowed_providers, allowed_api_formats_mode, allowed_api_formats}'
@@ -87,7 +87,7 @@ echo "http=$RESP (预期 403/429 = Default 锁死生效)"
 
 **Files:**
 - Create: `scripts/aether/renew-plans.sh`
-- 引用：`.env.aether`（Task 1/2 产出的全部环境变量）
+- 引用：`.env`（Task 1/2 产出的全部环境变量）
 
 **关键 API：**
 - `GET /api/admin/users?limit=1000&skip=N` → `{ items:[{id,...}], has_more, total }`，分页直到 `has_more=false`
@@ -98,7 +98,7 @@ echo "http=$RESP (预期 403/429 = Default 锁死生效)"
 - [ ] **Step 1: 取一个测试用户的 id（或自己账户）**
 
 ```bash
-source .env.aether
+source .env
 TEST_USER=$(curl -sS "$AETHER_BASE/api/admin/users?limit=1" \
   -H "Authorization: Bearer $MGMT_TOKEN" | jq -r '.items[0].id')
 echo "TEST_USER=$TEST_USER"
@@ -143,7 +143,7 @@ cat > scripts/aether/renew-plans.sh <<'SCRIPT'
 # 设计要点：单层循环、变量作用域在父 shell，避免管道子 shell 丢变量；旧同类型权益后端自动 replaced。
 set -uo pipefail
 
-ENV_FILE="${1:-.env.aether}"
+ENV_FILE="${1:-.env}"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
@@ -213,7 +213,7 @@ chmod +x scripts/aether/renew-plans.sh
 - [ ] **Step 5: 本地 dry-run 验证脚本（观察输出，首次预期 renewed=0）**
 
 ```bash
-bash -x scripts/aether/renew-plans.sh .env.aether 2>&1 | head -30
+bash -x scripts/aether/renew-plans.sh .env 2>&1 | head -30
 # 首次运行预期：遍历用户、打印 renewed=0（测试用户刚分配，未到 3 天窗口）；无报错。
 # 真实续期发生在某用户套餐进入"现在+3天"窗口时（每日 cron 自动触发），无需人工干预。
 ```
@@ -221,13 +221,13 @@ bash -x scripts/aether/renew-plans.sh .env.aether 2>&1 | head -30
 - [ ] **Step 6: 注册 cron（每天 03:07 本地时间，避开整点）**
 
 ```bash
-(crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env.aether >> /var/log/aether-renew.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env >> /var/log/aether-renew.log 2>&1") | crontab -
 crontab -l | grep renew-plans
 ```
 
 - [ ] **Step 6.5: 验证额度耗尽硬切断（AC#5 行为确认）**
 
-> 前置：本步针对 **Step 2 已分配标准月卡（日额度 $5）的 TEST_USER**，需用其专属令牌，而非 LOCKED_USER（锁死用户发请求会被 Default 直接拒，测不出额度耗尽）。若 .env.aether 中无 TEST_USER 令牌，先生成：
+> 前置：本步针对 **Step 2 已分配标准月卡（日额度 $5）的 TEST_USER**，需用其专属令牌，而非 LOCKED_USER（锁死用户发请求会被 Default 直接拒，测不出额度耗尽）。若 .env 中无 TEST_USER 令牌，先生成：
 > `TEST_TOKEN=$(curl -sS -X POST "$AETHER_BASE/api/admin/users/$TEST_USER/api-keys" -H "Authorization: Bearer $MGMT_TOKEN" -H "Content-Type: application/json" -d '{"name":"quotatest"}' | jq -r '.key')`
 
 ```bash
@@ -238,7 +238,7 @@ RESP=$(curl -sS -o /tmp/quota_resp.json -w "%{http_code}" -X POST "$AETHER_BASE/
   -d '{ "model": "gpt-4o-mini", "messages": [{"role":"user","content":"hi"}], "max_tokens": 1 }')
 echo "http=$RESP (额度耗尽时预期 429/403)"; cat /tmp/quota_resp.json
 # 或临时为该用户 grant 一个极小额度（如 $0.01/天）测试档，烧光后验证拒绝，再撤销。硬切断由后端保证，详见 runbook §4。
-echo "TEST_TOKEN=\"$TEST_TOKEN\"" >> .env.aether   # 持久化供后续步骤复用
+echo "TEST_TOKEN=\"$TEST_TOKEN\"" >> .env   # 持久化供后续步骤复用
 ```
 
 - [ ] **Step 6.6: 验证过期回收回 Default 锁死（AC#6）+ 续期 replaced（AC#7）**
@@ -284,11 +284,11 @@ echo "已恢复标准组为 unrestricted"
 # 说明：分组权限在鉴权时实时解析（spec 2.1 的 union_group_list_policies），改动即时对所有成员生效，无需重分配。
 ```
 
-- [ ] **Step 7: 提交脚本（.env.aether 含真实 token，禁止提交）**
+- [ ] **Step 7: 提交脚本（.env 含真实 token，禁止提交）**
 
 
 ```bash
-echo '.env.aether' >> .gitignore
+echo '.env' >> .gitignore
 git add scripts/aether/renew-plans.sh .gitignore
 git commit -m "feat: Aether 套餐每日自动续期脚本"
 ```
@@ -340,7 +340,7 @@ curl -sS -X POST "$AETHER_BASE/api/admin/user-groups" -d '{
   "allowed_models_mode": "specific", "allowed_models": [],
   "rate_limit_mode": "system", "rate_limit": null
 }'
-# 执行后把返回的 id 记为 <DEFAULT_GROUP_ID>（写入下方 .env.aether，供套餐 grant_user_groups 引用）
+# 执行后把返回的 id 记为 <DEFAULT_GROUP_ID>（写入下方 .env，供套餐 grant_user_groups 引用）
 ```
 建基础组（unrestricted，日额度由套餐控制）：
 ```bash
@@ -466,10 +466,10 @@ cat >> docs/runbooks/2026-08-27-aether-group-plan-management.md <<'MD'
 - 日期解析统一用 python3（跨 macOS/Linux，避免 date 偏移误判）。
 - 注册 crontab（每天 03:07，绝对路径）：
   ```bash
-  (crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env.aether >> /var/log/aether-renew.log 2>&1") | crontab -
+  (crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env >> /var/log/aether-renew.log 2>&1") | crontab -
   ```
-- 验证：`bash -x scripts/aether/renew-plans.sh .env.aether` 观察 renewed=N；检查 /var/log/aether-renew.log 无报错。
-- 注意：.env.aether 含 MGMT_TOKEN 禁止入库；cron 用绝对路径；脚本依赖 curl/jq/python3。
+- 验证：`bash -x scripts/aether/renew-plans.sh .env` 观察 renewed=N；检查 /var/log/aether-renew.log 无报错。
+- 注意：.env 含 MGMT_TOKEN 禁止入库；cron 用绝对路径；脚本依赖 curl/jq/python3。
 MD
 
 - [ ] **Step 4: 追加 §4 监控排障**
@@ -532,5 +532,5 @@ git commit -m "docs: Aether 号池分组套餐管理运维手册"
 
 - **Spec 覆盖**：Task 1+2（置备 = AC#2/3/4）、Task 3（分配验证 = AC#1/5/6/7 + 续期脚本）、Task 4（运维手册 = AC#9），AC#8 在手册 §2 说明。过期回收由被动重算机制保障，手册 §2/§4 记录。
 - **占位符**：无 TBD/TODO；`provision.sh` + `renew-plans.sh` + 手册均含完整内容，可直接生产执行。
-- **类型一致**：`$*_GROUP_ID` / `$*_PLAN_ID` 在 provision.sh 统一定义并写入 `.env.aether`；renew-plans.sh 与 Task 3 从同一 `.env.aether` 读取，引用一致。
+- **类型一致**：`$*_GROUP_ID` / `$*_PLAN_ID` 在 provision.sh 统一定义并写入 `.env`；renew-plans.sh 与 Task 3 从同一 `.env` 读取，引用一致。
 - **执行模式**：你手动在生产运行 `provision.sh`（一次性）+ `renew-plans.sh`（cron 每天），计划任务结构与交付物已对齐此模式。

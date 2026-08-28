@@ -11,7 +11,7 @@
 export AETHER_BASE="https://aether.example.com"
 export MGMT_TOKEN="mgmt_xxx"   # admin:users + admin:billing，过 IP 白名单
 bash scripts/aether/provision.sh
-# 输出 4 分组 + 3 套餐的 id，写入 .env.aether（chmod 600）
+# 输出 4 分组 + 3 套餐的 id，追加到 .env（仅追加/更新 id，不覆盖已有变量）
 ```
 
 ### 手动置备（不使用脚本时参考）
@@ -30,7 +30,7 @@ curl -sS -X POST "$AETHER_BASE/api/admin/user-groups" -d '{
   "allowed_models_mode": "specific", "allowed_models": [],
   "rate_limit_mode": "system", "rate_limit": null
 }'
-# 执行后把返回的 id 记为 <DEFAULT_GROUP_ID>（写入下方 .env.aether，供套餐 grant_user_groups 引用）
+# 执行后把返回的 id 记为 <DEFAULT_GROUP_ID>（供套餐 grant_user_groups 引用）
 ```
 建基础组（unrestricted，日额度由套餐控制）：
 ```bash
@@ -166,7 +166,7 @@ curl -sS -X PUT "$AETHER_BASE/api/admin/user-groups/<GROUP_ID>" \
 cron service 已内置在 `docker-compose.yml` 和 `docker-compose.single-node.yml` 中，随主服务一起启动：
 
 ```bash
-# 首次部署：先用 provision.sh 置备分组/套餐，生成 .env.aether
+# 首次部署：先用 provision.sh 置备分组/套餐，生成 .env 中的分组/套餐 id
 bash scripts/aether/provision.sh
 
 # 启动主服务 + cron
@@ -175,28 +175,28 @@ docker compose up -d
 docker logs -f aether-cron
 ```
 
-cron service 构建自 `scripts/aether/Dockerfile`（alpine + bash/curl/jq/python3），挂载 `.env.aether`（只读），依赖 app 启动后运行。
+cron service 构建自 `scripts/aether/Dockerfile`（alpine + bash/curl/jq/python3），通过 `env_file` 注入 `.env` 中的环境变量，依赖 app 启动后运行。
 
 **方式 B：宿主机 crontab（无 docker 环境）**
 
 ```bash
 # 注册 crontab（每天 03:07，绝对路径）
-(crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env.aether >> /var/log/aether-renew.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env >> /var/log/aether-renew.log 2>&1") | crontab -
 crontab -l | grep renew-plans
 ```
 
 ### 验证
 ```bash
-bash -x scripts/aether/renew-plans.sh .env.aether 2>&1 | head -30
+bash -x scripts/aether/renew-plans.sh .env 2>&1 | head -30
 # 首次运行预期：遍历用户、打印 renewed=0（无套餐进入 3 天窗口）；无报错。
 # 真实续期发生在某用户套餐进入"现在+3天"窗口时（每日 cron 自动触发），无需人工干预。
 tail -5 /var/log/aether-renew.log  # 检查日志
 ```
 
 ### 注意
-- `.env.aether` 含 `MGMT_TOKEN`，禁止入库（已在 `.gitignore`）。
+- `.env` 含 `MGMT_TOKEN`，已在 `.gitignore` 中忽略。
 - docker-compose 用户：cron 由容器自动调度，无需手动注册 crontab。若需修改调度时间，编辑 `scripts/aether/crontab` 后重建：`docker compose up -d --build cron`。
-- 宿主机用户：cron 用绝对路径；若 `MGMT_TOKEN` 过期或 IP 白名单变更，需更新 `.env.aether`。
+- 宿主机用户：cron 用绝对路径；若 `MGMT_TOKEN` 过期或 IP 白名单变更，需更新 `.env`。
 
 ---
 

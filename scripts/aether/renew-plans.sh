@@ -3,9 +3,9 @@
 # 设计要点：单层循环、变量作用域在父 shell，避免管道子 shell 丢变量；旧同类型权益后端自动 replaced。
 set -uo pipefail
 
-# 环境变量注入：优先从容器环境读取（docker-compose env_file），否则 source 本地 .env 文件
+# 环境变量注入：优先从容器环境读取（docker-compose env_file），否则 source .env
 if [ -z "${AETHER_BASE:-}" ] || [ -z "${MGMT_TOKEN:-}" ]; then
-  ENV_FILE="${1:-.env.aether}"
+  ENV_FILE="${1:-.env}"
   if [ -f "$ENV_FILE" ]; then
     # shellcheck disable=SC1090
     source "$ENV_FILE"
