@@ -1,0 +1,3 @@
+# Aether 套餐自动续期 — 每天 03:07（Asia/Shanghai）
+# 环境变量由 docker-compose env_file 注入，脚本无需额外参数
+7 3 * * * /usr/local/bin/renew-plans.sh >> /proc/1/fd/1 2>&1

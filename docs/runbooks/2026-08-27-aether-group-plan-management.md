@@ -160,6 +160,25 @@ curl -sS -X PUT "$AETHER_BASE/api/admin/user-groups/<GROUP_ID>" \
 - 依赖：curl / jq / python3
 
 ### 部署
+
+**方式 A：docker-compose cron service（推荐，生产环境）**
+
+cron service 已内置在 `docker-compose.yml` 和 `docker-compose.single-node.yml` 中，随主服务一起启动：
+
+```bash
+# 首次部署：先用 provision.sh 置备分组/套餐，生成 .env.aether
+bash scripts/aether/provision.sh
+
+# 启动主服务 + cron
+docker compose up -d
+# cron 容器自动每天 03:07 执行续期，日志输出到 docker logs aether-cron
+docker logs -f aether-cron
+```
+
+cron service 构建自 `scripts/aether/Dockerfile`（alpine + bash/curl/jq/python3），挂载 `.env.aether`（只读），依赖 app 启动后运行。
+
+**方式 B：宿主机 crontab（无 docker 环境）**
+
 ```bash
 # 注册 crontab（每天 03:07，绝对路径）
 (crontab -l 2>/dev/null; echo "7 3 * * * $(pwd)/scripts/aether/renew-plans.sh $(pwd)/.env.aether >> /var/log/aether-renew.log 2>&1") | crontab -
@@ -176,7 +195,8 @@ tail -5 /var/log/aether-renew.log  # 检查日志
 
 ### 注意
 - `.env.aether` 含 `MGMT_TOKEN`，禁止入库（已在 `.gitignore`）。
-- cron 用绝对路径；若 `MGMT_TOKEN` 过期或 IP 白名单变更，需更新 `.env.aether`。
+- docker-compose 用户：cron 由容器自动调度，无需手动注册 crontab。若需修改调度时间，编辑 `scripts/aether/crontab` 后重建：`docker compose up -d --build cron`。
+- 宿主机用户：cron 用绝对路径；若 `MGMT_TOKEN` 过期或 IP 白名单变更，需更新 `.env.aether`。
 
 ---
 

@@ -106,6 +106,25 @@ services:
         max-file: "10"
     restart: unless-stopped
 
+  cron:
+    build:
+      context: ./scripts/aether
+      dockerfile: Dockerfile
+    container_name: aether-cron
+    env_file:
+      - .env.aether
+    environment:
+      TZ: Asia/Shanghai
+    depends_on:
+      app:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
   nginx:
     image: nginx:stable-alpine
     container_name: aether-nginx
